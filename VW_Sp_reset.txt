@@ -1,0 +1,454 @@
+USE [HempleHBC]
+GO
+/****** Object:  StoredProcedure [dbo].[Sp_TCOReset]    Script Date: 7/6/2023 8:52:00 AM ******/
+DROP PROCEDURE [dbo].[Sp_TCOReset]
+GO
+/****** Object:  View [dbo].[vw_WorkloadDetail]    Script Date: 7/6/2023 8:52:00 AM ******/
+DROP VIEW [dbo].[vw_WorkloadDetail]
+GO
+/****** Object:  View [dbo].[vw_OnpremisesStorageDetail]    Script Date: 7/6/2023 8:52:00 AM ******/
+DROP VIEW [dbo].[vw_OnpremisesStorageDetail]
+GO
+/****** Object:  View [dbo].[vw_CountVMOnPhysicalServer]    Script Date: 7/6/2023 8:52:00 AM ******/
+DROP VIEW [dbo].[vw_CountVMOnPhysicalServer]
+GO
+/****** Object:  View [dbo].[vw_AzureOracleCost]    Script Date: 7/6/2023 8:52:00 AM ******/
+DROP VIEW [dbo].[vw_AzureOracleCost]
+GO
+/****** Object:  View [dbo].[vw_SQLVersionLicenseDetail]    Script Date: 7/6/2023 8:52:00 AM ******/
+DROP VIEW [dbo].[vw_SQLVersionLicenseDetail]
+GO
+/****** Object:  View [dbo].[vw_DatabaseDetails]    Script Date: 7/6/2023 8:52:00 AM ******/
+DROP VIEW [dbo].[vw_DatabaseDetails]
+GO
+/****** Object:  View [dbo].[vw_OracleVersionLicenseDetail]    Script Date: 7/6/2023 8:52:00 AM ******/
+DROP VIEW [dbo].[vw_OracleVersionLicenseDetail]
+GO
+/****** Object:  View [dbo].[vw_OracleDatabaseDetails]    Script Date: 7/6/2023 8:52:00 AM ******/
+DROP VIEW [dbo].[vw_OracleDatabaseDetails]
+GO
+/****** Object:  View [dbo].[vw_OracleDatabaseDetails]    Script Date: 7/6/2023 8:52:00 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE VIEW [dbo].[vw_OracleDatabaseDetails]
+ as
+select abc1.*, abc.Version,abc.OracleBundleName,abc.Instanceid from 
+(
+SELECT [ComputerName],[CurrentOperatingSystem],[Platform],[Environment],[VMType],[Cores] as NumberOfCores,NumberOfProcessors=Cores
+      ,[SystemMemory(GB)],LicenseType
+      ,[Storage(GB)] FROM [dbo].[ReconLiftandShift_InputData] where Included = 1
+) abc1
+inner join 
+(select qw.MachineName as computername,string_Agg(qw.[Instance],'')
+as Instanceid,qw.VersionNumber
+as Version,null as OracleBundleName from 
+(SELECT a.MachineName,a.Instance,a.[VersionNumber]
+from [Recon_OracleTabularInstanceDetails] a
+inner join Recon_AllMachineData b on a.MachineName=b.ComputerName
+group by a.MachineName,a.Instance,a.[VersionNumber] ) as qw
+group by qw.MachineName,qw.VersionNumber) abc
+on abc1.computername = abc.computername 
+
+GO
+/****** Object:  View [dbo].[vw_OracleVersionLicenseDetail]    Script Date: 7/6/2023 8:52:00 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-------------------------------------------------------------------------------------------------------------------------------------
+CREATE VIEW [dbo].[vw_OracleVersionLicenseDetail]  
+ as    
+ select [Version],count([Version]) as [Count of WorkLoad] , case when LicenseType like '%standard%' 
+ then 'standardedition'  When  LicenseType like '%enterprise%' then 'enterpriseedition' else 'enterpriseedition' end  as LicenseType
+,sum(CAST(NumberOfCores AS int)) as [Sum of Cores],sum(CAST(NumberOfProcessors AS int)) as [Sum of Processors],  
+ceiling(sum(CAST(NumberOfCores AS int)))  as [Total Licensable Cores], Environment as EnvType, VMType
+from [vw_OracleDatabaseDetails] group by [Version],LicenseType, Environment, VMType
+GO
+/****** Object:  View [dbo].[vw_DatabaseDetails]    Script Date: 7/6/2023 8:52:00 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-------------------------------------------------------------------------------------------------------------------------------------
+CREATE view [dbo].[vw_DatabaseDetails]
+as
+select ComputerName,[Databases],License, REPLACE(SQL_ServerProductName, 'Microsoft ', '') as SQL_ServerVersion,SUM(cast(TotalStorageGB as decimal(18,0))) as  TotalStorageGB,Environment,EnvType,VMType,OperatingSystem,Servers,Processors,Cores,RamInGB,Optimizeby from (
+SELECT DISTINCT 
+                         instance.ComputerName, 'sqlserver' AS Databases, CASE WHEN Sql_ServerEdition LIKE '%Enterprise%' THEN 'enterprisesqllicense' ELSE 'standardsqllicense' END AS License, SQL_ServerProductName, 
+                         F.Item AS TotalStorageGB, CASE WHEN [Machine Type] LIKE '%Virtual%' THEN 'virtualmachine' WHEN [Machine Type] LIKE '%Physical%' THEN 'physicalserver' END AS Environment, inputdata.Environment AS EnvType,inputdata.VMType AS VMType,
+                         CASE WHEN OsFamilyName LIKE '%Windows%' THEN 'windows' ELSE 'linux' END OperatingSystem, '1' AS Servers, [Number of Processors] AS Processors, [Number of Total Cores] Cores, 
+                         [System Memory (MB)] / 1024 AS RamInGB, 'cpu' AS Optimizeby
+FROM            [Recon_GetSqlServerDbInstances] instance left join reconliftandshift_inputdata inputdata on instance.ComputerName =  inputdata.ComputerName CROSS APPLY dbo.fnSplit(ISNULL([Logical Disk Size (GB)], 0), CHAR(10)) F
+WHERE        (inputdata.Included = 1) and (Current_OperatinSystem LIKE '%server%') AND (Sql_ServerEdition NOT LIKE '%express%' AND Sql_ServerEdition NOT LIKE '%developer%' AND Sql_ServerEdition NOT LIKE '%internal%' AND 
+                         Sql_ServerEdition NOT LIKE '%workgroup%')
+GROUP BY instance.ComputerName, SQL_ServerInstanceName, Sql_ServerEdition, SQL_ServerProductName, [Machine Type],inputdata.Environment,inputdata.VMType, OsFamilyName, [Number of Processors], [Number of Total Cores], [System Memory (MB)], F.Item
+)aa group by ComputerName,[Databases],License,SQL_ServerProductName,Environment,EnvType,VMType,OperatingSystem,[Servers],Processors,Cores,RamInGB,Optimizeby 
+GO
+/****** Object:  View [dbo].[vw_SQLVersionLicenseDetail]    Script Date: 7/6/2023 8:52:00 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-------------------------------------------------------------------------------------------------------------------------------------
+CREATE view [dbo].[vw_SQLVersionLicenseDetail]  
+ as    
+ select SQL_ServerVersion,isnull(count(SQL_ServerVersion),0) as [Count of WorkLoad]  ,License
+,isnull(sum(cores),0) as [Sum of Cores],isnull(sum(processors),0) as [Sum of Processors],  
+case when SQL_ServerVersion like '%2008%' then isnull(ceiling(CAST(sum(cores) as float)/CAST(sum(processors) as float)) ,0)
+else isnull(ceiling(sum(cores)/2),0) end as [Total Licensable Cores], EnvType, VMType
+from vw_DatabaseDetails group by SQL_ServerVersion,License,EnvType, VMType
+GO
+/****** Object:  View [dbo].[vw_AzureOracleCost]    Script Date: 7/6/2023 8:52:00 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE VIEW [dbo].[vw_AzureOracleCost]
+as
+Select a.ComputerName,a.AzureVmDesc,a.Cores ,tt.versioncount,(tt.versioncount*a.Cores)TotalCores,
+Cast(SUBSTRING(a.AzureVmDesc, 1, CHARINDEX(' ', a.AzureVmDesc)-1) as int)
+As AzureCore, (CEILING(Cast(SUBSTRING(a.AzureVmDesc, 1, CHARINDEX(' ', a.AzureVmDesc)-1) as int)*tt.versioncount)/2) as TotalAzureCore
+from ReconLiftandShift_InputData a inner join (
+Select [MachineName],count([VersionNumber]) as versioncount from(
+SELECT Distinct [MachineName]
+-- ,[Instance]
+,[VersionNumber]
+
+FROM [dbo].[Recon_OracleTabularInstanceDetails] group by [MachineName],[VersionNumber]) kk group by [MachineName]) tt
+on a.ComputerName=tt.MachineName and a.included=1
+
+GO
+/****** Object:  View [dbo].[vw_CountVMOnPhysicalServer]    Script Date: 7/6/2023 8:52:00 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE view [dbo].[vw_CountVMOnPhysicalServer]
+ as
+ select [Physical Server Name] HostComputerName,[Guest Machines Count] CountOfVMs from Recon_VMHostSummary 
+ where [Guest Machines Count] is not null
+GO
+/****** Object:  View [dbo].[vw_OnpremisesStorageDetail]    Script Date: 7/6/2023 8:52:00 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE view  [dbo].[vw_OnpremisesStorageDetail]  
+as  
+select  h.DeviceNumber,'localdisksan' as StorageType,'ssd' as DiskType,1 as Capicity,1024 as CapacityUnit,  
+1 as Backups, 1024 as BackupUnit,   
+1 as Archive,1024 as ArchiveUnit,  
+sum (cast( replace(F.Item,'N/A',0) as numeric(18,2)))as TotalDiskDriveSize  
+from [AllDevices_Assessment].[HardwareInventoryEx] T join [AllDevices_Assessment].[HardwareInventoryCore] h on h.DeviceNumber=t.DeviceNumber  
+CROSS APPLY dbo.fnSplit(ISNULL(T.[DiskDriveSize],0), CHAR(10)) F where F.Item!='-' and MachineType='Physical'  and h.CurrentOperatingSystem like '%server%'  
+  
+group by h.DeviceNumber
+GO
+/****** Object:  View [dbo].[vw_WorkloadDetail]    Script Date: 7/6/2023 8:52:00 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-------------------------------------------------------------------------------------------------------------------------------------
+CREATE view [dbo].[vw_WorkloadDetail]  
+as  
+
+SELECT hi.DeviceNumber, hi.ComputerName,hi.VMType,hi.Environment as EnvType, CASE WHEN (hi.DiskDriveSize = '-' OR hi.DiskDriveSize = '' OR hi.DiskDriveSize='Insufficient Data' Or  
+hi.DiskDriveSize IS NULL) THEN 0 ELSE cast(dbo.fnsplitstring1(REPLACE(REPLACE(DiskDriveSize, CHAR(13), ''), CHAR(10), ' '),' ') as numeric(18,2)) END AS UsedSotrage
+--,'Invetory244223032018083002' AS InvetoryName
+,'windowslinuxserver' AS MachineType,CurrentOperatingSystem as CurrentOperatingSystem,
+CASE WHEN MachineType = 'Virtual' THEN 'virtualmachine' ELSE 'physicalserver' END AS Environment, 
+CASE WHEN (CurrentOperatingSystem) NOT LIKE '%Datacenter%' THEN 'Standard ' ELSE 'Datacenter ' END AS  LicenseType,
+CASE WHEN [dbo].[GET_windowDAtaasanj](CurrentOperatingSystem) NOT LIKE '%window%' THEN 'linux' ELSE 'windows' END AS OperatingSystem, 1 AS Servers
+,case when NumberOfProcessors like '%Insufficient Data%' then 1 else CAST(NumberOfProcessors AS int) end as  NumberOfProcessors
+,case when NumberOfCores like '%Insufficient Data%' then 2 else CAST(NumberOfCores AS int) end as NumberOfCores
+,case when SystemMemory is null then 4 else CEILING(CAST(SystemMemory AS decimal(10)) / 1024) end AS [RamIn(GB)]
+,'cpu' AS Optimizeby, 'none' AS GPU,case when biztalk.name is null then 0 else 1 end as BizTalkMachine   
+FROM 
+(
+select a.*,b.vmtype,b.Environment from dbo.Recon_AllMachineData a
+left join
+reconliftandshift_inputdata b
+on a.ComputerName=b.ComputerName where b.Included!=0
+) AS hi 
+left join 
+[UT_SCE_Reporting].[SceBizTalkView] biztalk on hi.DeviceNumber=biztalk.DeviceNumber
+WHERE (MachineType <> 'Unknown') 
+and hi.ComputerName not in ((select a.ComputerName from [dbo].[Recon_AllMachineData] a join [WinServer_Inventory].[MSClusterCluster] b on a.DeviceNumber=b.DeviceNumber))
+GO
+/****** Object:  StoredProcedure [dbo].[Sp_TCOReset]    Script Date: 7/6/2023 8:52:00 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+-------------------------------------------------------------------------------------------------------------------------------------
+CREATE PROCEDURE  [dbo].[Sp_TCOReset] 
+    
+@flag int OUTPUT        
+As      
+Begin      
+-- truncate all assumption table      
+    
+BEGIN try    
+truncate table Tbl_DataCenterConstructionCost      
+truncate table Tbl_ElectricityCost_KW      
+truncate table Tbl_NetworkingCost
+truncate table CostOfEndPointProtection      
+truncate table SoftwareCostAssumption      
+truncate table SQLServerAssumption      
+truncate table Tbl_BizTalkLicenseCost      
+truncate table Tbl_DatabaseCost      
+truncate table Tbl_OracleDbCost
+truncate table Tbl_DataCenterCost      
+truncate table Tbl_ElectricityCost      
+truncate table Tbl_EndPointProtection      
+truncate table Tbl_HardwareCost      
+truncate table Tbl_ITlaborCost      
+truncate table Tbl_MigrationCost      
+truncate table Tbl_SoftwareCost      
+truncate table Tbl_StorageCostAssumption      
+truncate table Tbl_CostForVirtualizedVMs      
+truncate table Tbl_StorageCost
+truncate table Tbl_Save_CashFlow    
+truncate table [dbo].[Tbl_Save_DatabaseDetail]    
+truncate table [dbo].[Tbl_Save_Mastervalues]    
+truncate table [dbo].[Tbl_Save_MigrationData]    
+truncate table [dbo].[Tbl_Save_OnPremises_Azure_data]    
+truncate table [dbo].[Tbl_Save_physicalserver]    
+truncate table [dbo].[Tbl_Save_RentingBenefits]    
+truncate table [dbo].[Tbl_Save_SqlVersionLicense]    
+truncate table [dbo].[Tbl_Save_StorageData]  
+truncate table [dbo].[Tbl_VirtualizationCost]    
+  
+--truncate table [dbo].[tbl_SaveValues]    
+INSERT [dbo].[CostOfEndPointProtection] ([Benchmark], [Price], [Explanation]) VALUES (N'Antivirus Per VM', 10, N'VM end point protection cost')      
+INSERT [dbo].[CostOfEndPointProtection] ([Benchmark], [Price], [Explanation]) VALUES (N'Monitoring Agent Per VM ', 5, N'VM monitoring agent cost')      
+SET IDENTITY_INSERT [dbo].[SoftwareCostAssumption] ON       
+      
+    
+INSERT [dbo].[SoftwareCostAssumption] ([OS], [Pricing], [Source], [ID]) VALUES (N'Red Hat Enterprise Linux 5', 349, N'MS', 15)      
+      
+SET IDENTITY_INSERT [dbo].[SoftwareCostAssumption] OFF      
+SET IDENTITY_INSERT [dbo].[SQLServerAssumption] ON       
+      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2000 Standard', 5000.0000, NULL, N'Per Processor', 1)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2005 Standard', 6000.0000, NULL, N'Per Processor', 2)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2008 Standard', 6000.0000, NULL, N'Per Processor', 3)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2008 R2 Standard', 7499.0000, NULL, N'Per Processor', 4)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2008 R2 Enterprise', 28000.0000, N'https://www.brentozar.com/archive/2009/11/sql-server-2008-r2-pricing-and-feature-changes/', N'Per Processor', 5)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2008 R2 Datacenter', 57000.0000, NULL, N'Per Processor', 6)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2012 Standard', 6874.0000, N'https://searchsqlserver.techtarget.com/tip/Microsoft-SQL-Server-2012-pricing-licensing-packed-with-change', N'Per Core', 7)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2014 Enterprise', 6874.0000, N'https://msdn.microsoft.com/en-us/library/dn305848.aspx', N'Per core', 8)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2016 Standard', 1859.0000, NULL, N'Per core - Assuming all Physical cores are Licensable', 9)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2012 Enterprise', 6874.0000, NULL, N'Per core', 10)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2014 Standard ', 1785.0000, NULL, N'Per core', 11)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2016 Enterprise ', 7128.0000, NULL, N'Per core', 12)      
+INSERT [dbo].[SQLServerAssumption] ([SQL Server Version], [Pricing], [Reference], [Details], [ID]) VALUES (N'SQL Server 2017 Enterprise', 14256.0000, NULL, N'Per core', 13)      
+SET IDENTITY_INSERT [dbo].[SQLServerAssumption] OFF      
+SET IDENTITY_INSERT [dbo].[Tbl_BizTalkLicenseCost] ON       
+      
+     
+INSERT [dbo].[Tbl_BizTalkLicenseCost] ([id], [OS], [Price]) VALUES (1, N'Enterprise', CAST(44228 AS Decimal(10, 0)))      
+INSERT [dbo].[Tbl_BizTalkLicenseCost] ([id], [OS], [Price]) VALUES (2, N'Standard', CAST(10138 AS Decimal(10, 0)))      
+INSERT [dbo].[Tbl_BizTalkLicenseCost] ([id], [OS], [Price]) VALUES (3, N'Branch', CAST(2528 AS Decimal(10, 0)))      
+INSERT [dbo].[Tbl_BizTalkLicenseCost] ([id], [OS], [Price]) VALUES (4, N'Developer', CAST(0 AS Decimal(10, 0)))      
+SET IDENTITY_INSERT [dbo].[Tbl_BizTalkLicenseCost] OFF      
+SET IDENTITY_INSERT [dbo].[Tbl_CostForVirtualizedVMs] ON       
+      
+INSERT [dbo].[Tbl_CostForVirtualizedVMs] ([id], [VMType], [Price]) VALUES (1, N'VM', CAST(1000 AS Decimal(10, 0)))      
+SET IDENTITY_INSERT [dbo].[Tbl_CostForVirtualizedVMs] OFF      
+SET IDENTITY_INSERT [dbo].[Tbl_DatabaseCost] ON       
+      
+INSERT [dbo].[Tbl_DatabaseCost] ([ID], [LicenseTypePerCore], [Cost], [LicenseId], [Sqlversion]) VALUES (1, N'SQL Server Enterprise', CAST(14256 AS Decimal(10, 0)), N'enterprisesqllicense', N'SQL Server Enterprise license cost per 2 cores')      
+INSERT [dbo].[Tbl_DatabaseCost] ([ID], [LicenseTypePerCore], [Cost], [LicenseId], [Sqlversion]) VALUES (2, N'SQL Server Standard', CAST(3717 AS Decimal(10, 0)), N'standardsqllicense', N'SQL Server Standard license cost per 2 cores')      
+INSERT [dbo].[Tbl_DatabaseCost] ([ID], [LicenseTypePerCore], [Cost], [LicenseId], [Sqlversion]) VALUES (10, N'SQL Server Enterprise', CAST(3546 AS Decimal(10, 0)), N'enterprisesqllicense', N'Enterprise Software Assurance cost per 2 cores')      
+INSERT [dbo].[Tbl_DatabaseCost] ([ID], [LicenseTypePerCore], [Cost], [LicenseId], [Sqlversion]) VALUES (5, N'SQL Server Standard', CAST(929 AS Decimal(10, 0)), N'standardsqllicense', N'Standard Software Assurance cost per 2 cores')      
+    
+SET IDENTITY_INSERT [dbo].[Tbl_DatabaseCost] OFF  
+
+SET IDENTITY_INSERT [dbo].[Tbl_OracleDbCost] ON 
+INSERT [dbo].[Tbl_OracleDbCost] ([ID], [LicenseTypePerCore], [Cost], [LicenseId], [Oracleversion]) VALUES (1, N'10.2.0.1.0', CAST(17500 AS Decimal(10, 0)), N'standardedition', N'Oracle standardedition license cost ')
+INSERT [dbo].[Tbl_OracleDbCost] ([ID], [LicenseTypePerCore], [Cost], [LicenseId], [Oracleversion]) VALUES (4, N'12.0.1.0.0', CAST(47500 AS Decimal(10, 0)), N'enterpriseedition', N'Oracle Enterprise license cost ')
+SET IDENTITY_INSERT [dbo].[Tbl_OracleDbCost] OFF
+
+
+SET IDENTITY_INSERT [dbo].[Tbl_DataCenterCost] ON       
+      
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (30, 1, 1, CAST(0.75 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (31, 1, 1, CAST(1.75 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (32, 1, 1, CAST(2.00 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (33, 1, 1, CAST(3.50 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (34, 1, 2, CAST(3.50 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (35, 1, 4, CAST(7.00 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (36, 2, 1, CAST(4.00 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (37, 2, 1, CAST(7.00 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (38, 2, 1, CAST(14.00 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (39, 2, 2, CAST(8.00 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (40, 2, 2, CAST(14.00 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (41, 2, 2, CAST(28.00 AS Decimal(10, 2)), 1)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (42, 2, 4, CAST(14.00 AS Decimal(10, 2)), 2)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (43, 2, 4, CAST(16.00 AS Decimal(10, 2)), 2)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (44, 4, 2, CAST(28.00 AS Decimal(10, 2)), 2)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (45, 4, 2, CAST(56.00 AS Decimal(10, 2)), 2)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (46, 4, 4, CAST(32.00 AS Decimal(10, 2)), 3)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (47, 4, 4, CAST(56.00 AS Decimal(10, 2)), 3)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (48, 4, 4, CAST(112.00 AS Decimal(10, 2)), 3)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (52, 4, 6, CAST(112.00 AS Decimal(10, 2)), 3)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (53, 4, 8, CAST(112.00 AS Decimal(10, 2)), 4)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (54, 4, 8, CAST(224.00 AS Decimal(10, 2)), 4)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (55, 4, 8, CAST(448.00 AS Decimal(10, 2)), 4)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (56, 2, 6, CAST(64.00 AS Decimal(10, 2)), 4)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (57, 2, 8, CAST(64.00 AS Decimal(10, 2)), 4)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (58, 2, 10, CAST(128.00 AS Decimal(10, 2)), 4)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (59, 2, 16, CAST(256.00 AS Decimal(10, 2)), 4)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (60, 2, 32, CAST(1000.00 AS Decimal(10, 2)), 4)
+INSERT [dbo].[Tbl_DataCenterCost] ([ID], [Processor], [CorePerProcessor], [Ram], [RackUnitsRequired]) VALUES (61, 4, 32, CAST(2000.00 AS Decimal(10, 2)), 4)
+
+SET IDENTITY_INSERT [dbo].[Tbl_DataCenterCost] OFF      
+SET IDENTITY_INSERT [dbo].[Tbl_ElectricityCost] ON       
+      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (1, 1, 1, CAST(0.75 AS Decimal(10, 2)), CAST(105.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (2, 1, 1, CAST(1.75 AS Decimal(10, 2)), CAST(156.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (3, 1, 1, CAST(2.00 AS Decimal(10, 2)), CAST(156.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (4, 1, 1, CAST(3.50 AS Decimal(10, 2)), CAST(156.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (5, 1, 2, CAST(3.50 AS Decimal(10, 2)), CAST(156.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (6, 1, 4, CAST(7.00 AS Decimal(10, 2)), CAST(166.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (7, 2, 1, CAST(4.00 AS Decimal(10, 2)), CAST(160.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (8, 2, 1, CAST(7.00 AS Decimal(10, 2)), CAST(170.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (9, 2, 1, CAST(14.00 AS Decimal(10, 2)), CAST(180.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (10, 2, 2, CAST(8.00 AS Decimal(10, 2)), CAST(166.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (11, 2, 2, CAST(14.00 AS Decimal(10, 2)), CAST(250.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (12, 2, 2, CAST(28.00 AS Decimal(10, 2)), CAST(318.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (13, 2, 4, CAST(14.00 AS Decimal(10, 2)), CAST(324.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (14, 2, 4, CAST(16.00 AS Decimal(10, 2)), CAST(324.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (15, 4, 2, CAST(28.00 AS Decimal(10, 2)), CAST(400.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (16, 4, 2, CAST(56.00 AS Decimal(10, 2)), CAST(500.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (17, 4, 4, CAST(32.00 AS Decimal(10, 2)), CAST(800.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (18, 4, 4, CAST(56.00 AS Decimal(10, 2)), CAST(900.00 AS Decimal(10, 2)), NULL) 
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (19, 4, 4, CAST(112.00 AS Decimal(10, 2)), CAST(1000.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (20, 4, 6, CAST(112.00 AS Decimal(10, 2)), CAST(1100.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (21, 4, 8, CAST(112.00 AS Decimal(10, 2)), CAST(1200.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (22, 4, 8, CAST(224.00 AS Decimal(10, 2)), CAST(1100.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (23, 4, 8, CAST(448.00 AS Decimal(10, 2)), CAST(1200.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (24, 2, 6, CAST(64.00 AS Decimal(10, 2)), CAST(682.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (25, 2, 8, CAST(64.00 AS Decimal(10, 2)), CAST(682.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (26, 2, 10, CAST(128.00 AS Decimal(10, 2)), CAST(652.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (27, 2, 16, CAST(256.00 AS Decimal(10, 2)), CAST(1002.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (28, 2, 32, CAST(1000.00 AS Decimal(10, 2)), CAST(2005.00 AS Decimal(10, 2)), NULL)      
+INSERT [dbo].[Tbl_ElectricityCost] ([ID], [Processor], [CorePerProcessor], [Ram], [PowerRating], [Cost]) VALUES (29, 4, 32, CAST(2000.00 AS Decimal(10, 2)), CAST(3007.00 AS Decimal(10, 2)), NULL)      
+SET IDENTITY_INSERT [dbo].[Tbl_ElectricityCost] OFF      
+SET IDENTITY_INSERT [dbo].[Tbl_EndPointProtection] ON       
+      
+INSERT [dbo].[Tbl_EndPointProtection] ([id], [Banchmark], [Explanation], [Price]) VALUES (1, N'Antivirus Per VM', N' VM end point protection cost', CAST(10 AS Decimal(10, 0)))      
+INSERT [dbo].[Tbl_EndPointProtection] ([id], [Banchmark], [Explanation], [Price]) VALUES (2, N'Monitoring Agent Per VM', N'VM monitoring agent cost', CAST(5 AS Decimal(10, 0)))      
+SET IDENTITY_INSERT [dbo].[Tbl_EndPointProtection] OFF      
+SET IDENTITY_INSERT [dbo].[Tbl_HardwareCost] ON       
+      
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (1, 1, 1, CAST(0.75 AS Decimal(10, 2)), CAST(1173 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (2, 1, 1, CAST(1.75 AS Decimal(10, 2)), CAST(1178 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (3, 1, 1, CAST(2.00 AS Decimal(10, 2)), CAST(1415 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (4, 1, 1, CAST(3.50 AS Decimal(10, 2)), CAST(1424 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (5, 1, 2, CAST(3.50 AS Decimal(10, 2)), CAST(1684 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (6, 1, 4, CAST(7.00 AS Decimal(10, 2)), CAST(1951 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (7, 2, 1, CAST(4.00 AS Decimal(10, 2)), CAST(4332 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (8, 2, 1, CAST(7.00 AS Decimal(10, 2)), CAST(4350 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (9, 2, 1, CAST(14.00 AS Decimal(10, 2)), CAST(4392 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (10, 2, 2, CAST(8.00 AS Decimal(10, 2)), CAST(6199 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (11, 2, 2, CAST(14.00 AS Decimal(10, 2)), CAST(6235 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (12, 2, 2, CAST(28.00 AS Decimal(10, 2)), CAST(6319 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (13, 2, 4, CAST(14.00 AS Decimal(10, 2)), CAST(6964 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (14, 2, 4, CAST(16.00 AS Decimal(10, 2)), CAST(7169 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (15, 4, 2, CAST(28.00 AS Decimal(10, 2)), CAST(14551 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (16, 4, 2, CAST(56.00 AS Decimal(10, 2)), CAST(14719 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (17, 4, 4, CAST(32.00 AS Decimal(10, 2)), CAST(16732 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (18, 4, 4, CAST(56.00 AS Decimal(10, 2)), CAST(16876 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (19, 4, 4, CAST(112.00 AS Decimal(10, 2)), CAST(17212 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (20, 4, 6, CAST(112.00 AS Decimal(10, 2)), CAST(19416 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (21, 4, 8, CAST(112.00 AS Decimal(10, 2)), CAST(21558 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (22, 4, 8, CAST(224.00 AS Decimal(10, 2)), CAST(23732 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (23, 4, 8, CAST(448.00 AS Decimal(10, 2)), CAST(27455 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (24, 2, 6, CAST(64.00 AS Decimal(10, 2)), CAST(8806 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (25, 2, 8, CAST(64.00 AS Decimal(10, 2)), CAST(14105 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (26, 2, 10, CAST(128.00 AS Decimal(10, 2)), CAST(14125 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (27, 2, 16, CAST(256.00 AS Decimal(10, 2)), CAST(21764 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (28, 2, 32, CAST(1000.00 AS Decimal(10, 2)), CAST(35365 AS Decimal(10, 0)))
+INSERT [dbo].[Tbl_HardwareCost] ([ID], [Processor], [CorePerProcessor], [Ram], [Price]) VALUES (29, 4, 32, CAST(2000.00 AS Decimal(10, 2)), CAST(98785 AS Decimal(10, 0)))
+
+SET IDENTITY_INSERT [dbo].[Tbl_HardwareCost] OFF      
+SET IDENTITY_INSERT [dbo].[Tbl_ITlaborCost] ON       
+      
+INSERT [dbo].[Tbl_ITlaborCost] ([ID], [Type], [ITLaborCost]) VALUES (1, N'TotalPhysicalServerManagedByAdmin', N'100')      
+INSERT [dbo].[Tbl_ITlaborCost] ([ID], [Type], [ITLaborCost]) VALUES (2, N'TotalVmsManagedByAdmin', N'120')      
+INSERT [dbo].[Tbl_ITlaborCost] ([ID], [Type], [ITLaborCost]) VALUES (3, N'HourlyRate', N'23')      
+SET IDENTITY_INSERT [dbo].[Tbl_ITlaborCost] OFF      
+SET IDENTITY_INSERT [dbo].[Tbl_MigrationCost] ON       
+      
+INSERT [dbo].[Tbl_MigrationCost] ([id], [Category], [VM_1_1000_Price], [VM_1000_2000_Price], [VM_2000_3000_Price], [VM_3000_4000_Price], [VM_4000_5000_Price]) VALUES (1, N'EA (hours)', N'150', N'120', N'100', N'80', N'60')
+INSERT [dbo].[Tbl_MigrationCost] ([id], [Category], [VM_1_1000_Price], [VM_1000_2000_Price], [VM_2000_3000_Price], [VM_3000_4000_Price], [VM_4000_5000_Price]) VALUES (2, N'Monitoring Agent Per VM', N'60', N'50', N'40', N'30', N'20')
+INSERT [dbo].[Tbl_MigrationCost] ([id], [Category], [VM_1_1000_Price], [VM_1000_2000_Price], [VM_2000_3000_Price], [VM_3000_4000_Price], [VM_4000_5000_Price]) VALUES (3, N'Internal Consultant (hours)', N'42', N'42', N'42', N'42', N'42')
+INSERT [dbo].[Tbl_MigrationCost] ([id], [Category], [VM_1_1000_Price], [VM_1000_2000_Price], [VM_2000_3000_Price], [VM_3000_4000_Price], [VM_4000_5000_Price]) VALUES (4, N'Project Management Cost', N'150', N'120', N'100', N'80', N'60')
+INSERT [dbo].[Tbl_MigrationCost] ([id], [Category], [VM_1_1000_Price], [VM_1000_2000_Price], [VM_2000_3000_Price], [VM_3000_4000_Price], [VM_4000_5000_Price]) VALUES (5, N'Assesment Cost/ VM', N'50', N'40', N'30', N'20', N'10')      
+SET IDENTITY_INSERT [dbo].[Tbl_MigrationCost] OFF      
+SET IDENTITY_INSERT [dbo].[Tbl_SoftwareCost] ON       
+      
+INSERT [dbo].[Tbl_SoftwareCost] ([ID], [Type], [WindowsDatacenterLicenseCost]) VALUES (1, N'Windows Datacenter license cost for a 2-core pack', CAST(769.37 AS Decimal(10, 2)))
+INSERT [dbo].[Tbl_SoftwareCost] ([ID], [Type], [WindowsDatacenterLicenseCost]) VALUES (2, N'Windows Standard license cost for a 2-core pack', CAST(121.50 AS Decimal(10, 2)))
+      
+SET IDENTITY_INSERT [dbo].[Tbl_SoftwareCost] OFF      
+INSERT [dbo].[Tbl_StorageCostAssumption] ([Benchmark], [Price], [Source]) VALUES (N'$ per usable GB of storage, inclusive of software', 5, N'Forrester ')      
+INSERT [dbo].[Tbl_StorageCostAssumption] ([Benchmark], [Price], [Source]) VALUES (N'$ per usable GB of storage, inclusive of software', 5, N'Forrester ')  
+
+
+SET IDENTITY_INSERT [dbo].[Tbl_StorageCost] ON 
+INSERT [dbo].[Tbl_StorageCost] ([ID], [StorageType], [CostPerGB]) VALUES (1, N'disk/SAN-SSD', CAST(0.20 AS Decimal(10, 2)))
+INSERT [dbo].[Tbl_StorageCost] ([ID], [StorageType], [CostPerGB]) VALUES (2, N'disk/SAN-HDD', CAST(0.20 AS Decimal(10, 2)))
+INSERT [dbo].[Tbl_StorageCost] ([ID], [StorageType], [CostPerGB]) VALUES (3, N'NAS/file', CAST(0.2 AS Decimal(10, 2)))
+INSERT [dbo].[Tbl_StorageCost] ([ID], [StorageType], [CostPerGB]) VALUES (4, N'Blob storage', CAST(0.2 AS Decimal(10, 2)))
+INSERT [dbo].[Tbl_StorageCost] ([ID], [StorageType], [CostPerGB]) VALUES (5, N'Cost per tape drive', CAST(160 AS Decimal(10, 2)))
+INSERT [dbo].[Tbl_StorageCost] ([ID], [StorageType], [CostPerGB]) VALUES (6, N'On-Prem DRCost', CAST(0.25 AS Decimal(10, 2)))
+INSERT [dbo].[Tbl_StorageCost] ([ID], [StorageType], [CostPerGB]) VALUES (7, N'Include Backup/DR Cost', CAST(1.00 AS Decimal(10, 2)))
+SET IDENTITY_INSERT [dbo].[Tbl_StorageCost] OFF
+   
+SET IDENTITY_INSERT [dbo].[Tbl_DataCenterConstructionCost] ON 
+INSERT [dbo].[Tbl_DataCenterConstructionCost] ([ID], [Hardware_configuration], [RackUnitRequired]) VALUES (1, N'Data center construction cost per rack', CAST(253906.00 AS Decimal(10, 2)))
+INSERT [dbo].[Tbl_DataCenterConstructionCost] ([ID], [Hardware_configuration], [RackUnitRequired]) VALUES (2, N'Data center useful life', CAST(20.00 AS Decimal(10, 2)))
+INSERT [dbo].[Tbl_DataCenterConstructionCost] ([ID], [Hardware_configuration], [RackUnitRequired]) VALUES (3, N'Rack units per rack', CAST(42.00 AS Decimal(10, 2)))
+SET IDENTITY_INSERT [dbo].[Tbl_DataCenterConstructionCost] OFF
+
+SET IDENTITY_INSERT [dbo].[Tbl_ElectricityCost_KW] ON 
+INSERT [dbo].[Tbl_ElectricityCost_KW] ([ID], [Type], [Cost]) VALUES (1, N'Price per KW hour', CAST(0.133 AS Decimal(10, 3)))
+SET IDENTITY_INSERT [dbo].[Tbl_ElectricityCost_KW] OFF
+
+SET IDENTITY_INSERT [dbo].[Tbl_NetworkingCost] ON 
+INSERT [dbo].[Tbl_NetworkingCost] ([ID], [Type], [Cost], [CostUnit]) VALUES (1, N'Network hardware and software costs as a percentage of hardware and software costs (%)', CAST(15.00 AS Decimal(10, 2)), N'%')
+INSERT [dbo].[Tbl_NetworkingCost] ([ID], [Type], [Cost], [CostUnit]) VALUES (2, N'Service provider cost/GB', CAST(0.15 AS Decimal(10, 2)), N'')
+INSERT [dbo].[Tbl_NetworkingCost] ([ID], [Type], [Cost], [CostUnit]) VALUES (3, N'Network maintenance cost as a percentage of network hardware and software costs (%)', CAST(15.00 AS Decimal(10, 2)), N'%')
+SET IDENTITY_INSERT [dbo].[Tbl_NetworkingCost] OFF
+
+INSERT [dbo].[Tbl_VirtualizationCost] ([Type], [VirtualisationCost]) VALUES (N'Per virtual machine, per month, infrastructure cost to load balance, backup and patch virtual machines', N'26.52')
+
+INSERT [dbo].[Tbl_VirtualizationCost] ([Type], [VirtualisationCost]) VALUES (N'VMware virtualization software license cost per physical proc', N'1268')
+
+INSERT [dbo].[Tbl_VirtualizationCost] ([Type], [VirtualisationCost]) VALUES (N'Hyper-V virtualiation software license cost', N'0')
+
+
+select @flag = '1'    
+     
+END try    
+begin catch    
+    
+select @flag  = '0'    
+    
+end catch    
+      
+End 
+
+
+GO
